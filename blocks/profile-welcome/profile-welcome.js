@@ -1,5 +1,9 @@
 import { fetchLanguagePlaceholders } from '../../scripts/scripts.js';
 import { defaultProfileClient, isSignedInUser } from '../../scripts/auth/profile.js';
+import { decorateIcons } from '../../scripts/lib-franklin.js';
+import { fetchIndustryOptions, getIndustryNameById } from '../../scripts/profile/profile.js';
+
+const UEAuthorMode = window.hlx.aemRoot || window.location.href.includes('.html');
 
 let placeholders = {};
 try {
@@ -9,70 +13,125 @@ try {
   console.error('Error fetching placeholders:', err);
 }
 
-function decorateButton(profileCtaType, profileCtaText, profileCtaLink) {
-  if (!profileCtaLink) return '';
-  const a = document.createElement('a');
-  a.classList.add('button', profileCtaType === 'primary' ? 'primary' : 'secondary');
-  a.href = profileCtaLink;
-  a.textContent = profileCtaText;
-  return a.outerHTML;
+function decorateButton(button) {
+  const a = button.querySelector('a');
+  if (a) {
+    a.classList.add('button');
+    if (a.parentElement.tagName === 'EM') a.classList.add('secondary');
+    if (a.parentElement.tagName === 'STRONG') a.classList.add('primary');
+    return a.outerHTML;
+  }
+  return '';
+}
+
+function replaceProfileText(field, value) {
+  return field.replace('{adobeIMS.first_name}', value);
 }
 
 export default async function decorate(block) {
-  const [
-    profileEyebrowText,
-    profileHeading,
-    profileDescription,
-    profileCtaType,
-    profileCtaText,
-    profileCtaLink,
-    incompleteProfileText,
-  ] = block.querySelectorAll(':scope div > div');
+  const [profileEyebrowText, profileHeading, profileDescription, profileCta, incompleteProfileText, showProfileCard] =
+    block.querySelectorAll(':scope div > div');
 
+  const eyebrowText = profileEyebrowText.innerHTML;
+  const headingText = profileHeading.innerHTML;
+  const descriptionText = profileDescription.innerHTML;
   const isSignedIn = await isSignedInUser();
+
+  let profileData = {};
+  let ppsProfileData = {};
+  let communityProfileData = {};
+
   if (isSignedIn) {
-    const profileData = await defaultProfileClient.getMergedProfile();
-    const ppsProfileData = await defaultProfileClient.getPPSProfile();
-    const communityProfileData = await defaultProfileClient.fetchCommunityProfileDetails();
+    [profileData, ppsProfileData, communityProfileData] = await Promise.all([
+      defaultProfileClient.getMergedProfile(),
+      defaultProfileClient.getPPSProfile(),
+      defaultProfileClient.fetchCommunityProfileDetails(),
+    ]);
+  }
 
-    const adobeDisplayName = profileData?.displayName || '';
-    const adobeFirstName = profileData?.first_name || '';
-    const industry = profileData?.industryInterests || [];
-    const roles = profileData?.role || [];
-    const interests = profileData?.interests || [];
+  const {
+    displayName: adobeDisplayName = UEAuthorMode ? 'User Name' : '',
+    first_name: adobeFirstName = UEAuthorMode ? 'First Name' : '',
+    industryInterests: industry = UEAuthorMode ? ['User Industry'] : [],
+    role: roles = UEAuthorMode ? ['User Roles'] : [],
+    interests = UEAuthorMode ? ['User Interests'] : [],
+  } = profileData || {};
 
-    const profilePicture = ppsProfileData?.images?.['100'] || '';
-    const company = ppsProfileData?.company || '';
+  const { images: { 100: profilePicture } = '', company = UEAuthorMode ? 'User Company' : '' } = ppsProfileData || {};
 
-    const communityUserName = communityProfileData?.username || '';
-    const communityUserTitle = communityProfileData?.title || '';
-    const communityUserLocation = communityProfileData?.location || '';
+  const {
+    username: communityUserName = UEAuthorMode ? 'Community User Name' : '',
+    title: communityUserTitle = UEAuthorMode ? 'Community User Title' : '',
+    location: communityUserLocation = UEAuthorMode ? 'Community User Location' : '',
+  } = communityProfileData || {};
 
-    const roleMappings = {
-      Developer: placeholders?.roleCardDeveloperTitle || 'Developer',
-      User: placeholders?.roleCardUserTitle || 'Business User',
-      Leader: placeholders?.roleCardBusinessLeaderTitle || 'Business Leader',
-      Admin: placeholders?.roleCardAdministratorTitle || 'Administrator',
-    };
+  const roleMappings = {
+    Developer: placeholders?.roleCardDeveloperTitle || 'Developer',
+    User: placeholders?.roleCardUserTitle || 'Business User',
+    Leader: placeholders?.roleCardBusinessLeaderTitle || 'Business Leader',
+    Admin: placeholders?.roleCardAdministratorTitle || 'Administrator',
+  };
 
-    const hasInterests =
-      interests &&
-      ((Array.isArray(interests) && interests.length > 0) ||
-        (typeof interests === 'string' && interests.trim() !== ''));
+  const hasInterests =
+    interests &&
+    ((Array.isArray(interests) && interests.length > 0) || (typeof interests === 'string' && interests.trim() !== ''));
 
-    const profileWelcomeBlock = document.createRange().createContextualFragment(`
-        <div class="profile-curated-card">
-                <div class="profile-curated-card-eyebrowtext">
-                ${profileEyebrowText.innerHTML.replace('{adobeIMS.first_name}', adobeFirstName)}
-                </div>
-                <div class="profile-curated-card-heading">
-                ${profileHeading.innerHTML}
-                </div>
-                <div class="profile-curated-card-description">
-                ${profileDescription.innerHTML}
-                </div>
-            </div>
-            <div class="profile-user-card">
+  const hasIndustry =
+    industry &&
+    ((Array.isArray(industry) && industry.length > 0) || (typeof industry === 'string' && industry.trim() !== ''));
+
+  let industryName = '';
+
+  if (hasIndustry) {
+    const industryOptions = await fetchIndustryOptions();
+    if (Array.isArray(industry)) {
+      industryName = getIndustryNameById(industry[0], industryOptions);
+    }
+    if (typeof industryName === 'string') {
+      industryName = getIndustryNameById(industry, industryOptions);
+    }
+  }
+  const hasIndustryName = industryName.trim() !== '';
+
+  let industryContent = '';
+  if (hasIndustryName) {
+    industryContent = `
+          <div class="profile-user-card-industry">
+            <span class="industry-heading">${placeholders?.myIndustry || 'MY INDUSTRY'}: </span>
+            <span class="${!hasInterests ? 'incomplete-profile' : ''}">
+              ${industryName}
+            </span>
+          </div>`;
+  } else if (!hasInterests || UEAuthorMode) {
+    industryContent = `
+          <div class="profile-user-card-industry">
+            <span class="industry-heading">${placeholders?.myIndustry || 'MY INDUSTRY'}: </span>
+            <span class="${!hasInterests ? 'incomplete-profile' : ''}">
+              ${placeholders?.unknown || 'Unknown'}
+            </span>
+          </div>`;
+  }
+
+  const profileWelcomeBlock = document.createRange().createContextualFragment(`
+    <div class="profile-curated-card">
+      <div class="profile-curated-eyebrowtext">
+      ${eyebrowText ? replaceProfileText(eyebrowText, adobeFirstName) : ``}
+      </div>
+      <div class="profile-curated-card-heading">
+      ${headingText ? replaceProfileText(headingText, adobeFirstName) : ``}
+      </div>
+      <div class="profile-curated-card-description">
+      ${descriptionText ? replaceProfileText(descriptionText, adobeFirstName) : ``}
+      </div>
+    </div>
+  `);
+  block.textContent = '';
+  block.append(profileWelcomeBlock);
+
+  // Conditionally display the profile card based on showProfileCard toggle
+  if (showProfileCard.textContent.trim() === 'true') {
+    const profileUserCard = document.createRange().createContextualFragment(`
+          <div class="profile-user-card">
                 <div class="profile-user-card-left">
                   <div class="profile-user-card-avatar-company-info">
                         <div class="profile-user-card-avatar">
@@ -89,20 +148,22 @@ export default async function decorate(block) {
                         </div> 
                   </div>
                 ${
-                  hasInterests
+                  hasInterests && !UEAuthorMode
                     ? `
-                    <div class="profile-user-card-communityInfo">
+                    <div class="profile-user-card-community-info">
                       ${
                         communityUserTitle
                           ? `<div class="profile-user-card-title">
-                      <span class="heading">${placeholders?.title || 'TITLE: '}</span>${communityUserTitle}</div>`
+                      <span class="title-heading">${
+                        placeholders?.title || 'TITLE'
+                      }: </span><span class="content">${communityUserTitle}</span></div>`
                           : ''
                       }
                       ${
                         communityUserLocation
-                          ? `<div class="profile-user-card-location"><span class="heading">${
-                              placeholders?.location || 'LOCATION: '
-                            }</span>${communityUserLocation}</div>`
+                          ? `<div class="profile-user-card-location"><span class="location-heading">${
+                              placeholders?.location || 'LOCATION'
+                            }: </span><span class="content">${communityUserLocation}</span></div>`
                           : ''
                       }
                       </div>
@@ -118,34 +179,24 @@ export default async function decorate(block) {
                 <div class="profile-user-card-right">
                   <div class="profile-user-card-details">
                     <div class="profile-user-card-role">
-                    <span class="heading">${placeholders?.myRole || 'MY ROLE: '}</span>
-                    <span class="${!hasInterests ? 'incompleteProfile' : ''}">${roles
-                      .map((role) => roleMappings[role] || role)
-                      .join(' | ')}</span>
+                    <span class="role-heading">${placeholders?.myRole || 'MY ROLE'}: </span>
+                    <span class="${!hasInterests ? 'incomplete-profile' : 'content'}">${roles
+                      ?.map((role) => roleMappings[role] || role)
+                      ?.join(' | ')}</span>
                     </div>
-                    <div class="profile-user-card-industry">
-                      <span class="heading">${placeholders?.myIndustry || 'MY INDUSTRY: '}</span>
-                      <span class="${!hasInterests ? 'incompleteProfile' : ''}">
-                        ${!hasInterests ? placeholders?.unknown || 'Unknown' : industry}
-                      </span>
-                    </div>  
+                    ${industryContent}
                     <div class="profile-user-card-interests">
-                      <span class="heading">${placeholders?.myInterests || 'MY INTERESTS: '}</span>
-                      <span class="${!hasInterests ? 'incompleteProfile' : ''}">
+                      <span class="interest-heading">${placeholders?.myInterests || 'MY INTERESTS'}: </span>
+                      <span class="${!hasInterests ? 'incomplete-profile' : 'content'}">
                         ${!hasInterests ? placeholders?.unknown || 'Unknown' : interests.join(' | ')}
                       </span>
                     </div>
                   </div>
-                    <div class="profile-user-card-cta">${decorateButton(
-                      profileCtaType.innerHTML,
-                      profileCtaText.innerHTML,
-                      profileCtaLink.innerHTML,
-                    )}</div>
+                    <div class="profile-user-card-cta">${decorateButton(profileCta)}</div>
                 </div>    
-        </div>
+              </div>
         `);
-
-    block.textContent = '';
-    block.append(profileWelcomeBlock);
+    block.append(profileUserCard);
   }
+  decorateIcons(block);
 }

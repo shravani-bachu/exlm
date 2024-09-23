@@ -1,8 +1,10 @@
-import { fetchLanguagePlaceholders, getConfig } from '../../scripts/scripts.js';
+import { fetchLanguagePlaceholders } from '../../scripts/scripts.js';
 import { decorateIcons } from '../../scripts/lib-franklin.js';
 import { sendNotice } from '../../scripts/toast/toast.js';
 import { defaultProfileClient, isSignedInUser } from '../../scripts/auth/profile.js';
 import Dropdown from '../../scripts/dropdown/dropdown.js';
+import { fetchIndustryOptions } from '../../scripts/profile/profile.js';
+import FormValidator from '../../scripts/form-validator.js';
 
 let placeholders = {};
 try {
@@ -12,22 +14,20 @@ try {
   console.error('Error fetching placeholders:', err);
 }
 
-const { industryUrl } = getConfig();
 const PROFILE_UPDATED = placeholders?.profileUpdated || 'Your profile changes have been saved!';
 const PROFILE_NOT_UPDATED = placeholders?.profileNotUpdated || 'Your profile changes have not been saved!';
 const SELECT_ROLE = placeholders?.selectRole || 'Select this role';
 const FORM_ERROR = placeholders?.formFieldGroupError || 'Please select at least one option.';
 
-async function fetchIndustryOptions() {
-  try {
-    const response = await fetch(industryUrl);
-    const data = await response.json();
-    return data.data;
-  } catch (error) {
-    // eslint-disable-next-line no-console
-    console.error('There was a problem with the fetch operation:', error);
-    return [];
-  }
+function validateForm(formSelector) {
+  if (!formSelector) return true;
+
+  const options = {
+    aggregateRules: { checkBoxGroup: {} },
+  };
+
+  const validator = new FormValidator(formSelector, placeholders, options);
+  return validator.validate();
 }
 
 export default async function decorate(block) {
@@ -51,7 +51,6 @@ export default async function decorate(block) {
       description:
         placeholders?.roleCardDeveloperDescription ||
         `Responsible for engineering Adobe products implementation, integration, data-modeling, data engineering, and other technical skills.`,
-      selectionDefault: '',
     },
     {
       role: 'Admin',
@@ -60,7 +59,6 @@ export default async function decorate(block) {
       description:
         placeholders?.roleCardAdministratorDescription ||
         `Responsible for the technical operations, configuration, permissions, management, and support needs of Adobe products.`,
-      selectionDefault: '',
     },
     {
       role: 'Leader',
@@ -69,7 +67,6 @@ export default async function decorate(block) {
       description:
         placeholders?.roleCardBusinessLeaderDescription ||
         `Responsible for owning the digital strategy and accelerating value through Adobe products.`,
-      selectionDefault: '',
     },
   ];
 
@@ -85,29 +82,32 @@ export default async function decorate(block) {
         }</label>
       </form>
     </div>
-    <div class="role-cards-holder">
-    ${roleCardsData
-      .map(
-        (card, index) => `
-            <div class="role-cards-item">
-              <div class="role-cards-description">
-                <div class="role-cards-title">
-                  <span class="icon icon-${card.icon}"></span>
-                  <h3>${card.title}</h3>
+    <form class="role-and-industry-form">
+      <div class="role-and-industry-form-error form-error hidden">${FORM_ERROR}</div>
+      <div class="role-cards-holder">
+      ${roleCardsData
+        .map(
+          (card) => `
+              <div class="role-cards-item">
+                <div class="role-cards-description">
+                  <div class="role-cards-title">
+                    <span class="icon icon-${card.icon}"></span>
+                    <h3>${card.title}</h3>
+                  </div>
+                  <p>${card.description}</p>
                 </div>
-                <p>${card.description}</p>
-              </div>
-              <div class="role-cards-default-selection">
-                ${isSignedIn ? `<p>${card.selectionDefault}</p>` : ''}
-                <span class="role-cards-checkbox">
-                  <input name="${card.role}" type="checkbox" id="selectRole-${index}">
-                  <label class="subText" for="selectRole-${index}">${SELECT_ROLE}</label>
-                </span>
-              </div>
-            </div>`,
-      )
-      .join('')}
-  </div>
+                <div class="role-cards-default-selection">
+                  ${isSignedIn && card?.selectionDefault ? `<p>${card.selectionDefault}</p>` : ''}
+                  <span class="role-cards-checkbox">
+                    <input name="${card.role}" type="checkbox">
+                    <label class="select-role-label">${SELECT_ROLE}</label>
+                  </span>
+                </div>
+              </div>`,
+        )
+        .join('')}
+    </div>
+    </form>
 `);
 
   block.textContent = '';
@@ -117,7 +117,7 @@ export default async function decorate(block) {
     const industryOptions = await fetchIndustryOptions();
     const updatedIndustryOptions = industryOptions.map((industry) => ({
       ...industry,
-      value: industry.Name,
+      value: industry.id,
       title: industry.Name,
     }));
     const selectIndustryDropDown = new Dropdown(
@@ -125,15 +125,13 @@ export default async function decorate(block) {
       `${placeholders?.select || 'Select'}`,
       updatedIndustryOptions,
     );
-    selectIndustryDropDown.handleOnChange((selectedIndustry) => {
-      if (Array.isArray(selectedIndustry)) {
-        const industrySelection = [];
-        industrySelection.push(selectedIndustry);
-        defaultProfileClient.updateProfile('industryInterests', industrySelection, true);
-      } else if (typeof selectedIndustry === 'string') {
-        const industrySelection = selectedIndustry;
-        defaultProfileClient.updateProfile('industryInterests', industrySelection, true);
-      }
+    selectIndustryDropDown.handleOnChange((selectedIndustryId) => {
+      const industrySelection = [];
+      industrySelection.push(selectedIndustryId);
+      defaultProfileClient
+        .updateProfile('industryInterests', industrySelection, true)
+        .then(() => sendNotice(PROFILE_UPDATED))
+        .catch(() => sendNotice(PROFILE_NOT_UPDATED));
     });
 
     const profileData = await defaultProfileClient.getMergedProfile();
@@ -157,41 +155,44 @@ export default async function decorate(block) {
     });
   }
 
+  const formElement = block.querySelector('.role-and-industry-form');
+  const formErrorElement = formElement.querySelector('.role-and-industry-form-error');
+
   block.querySelectorAll('.role-cards-item').forEach((card) => {
     const checkbox = card.querySelector('input[type="checkbox"]');
 
     card.addEventListener('click', (e) => {
-      const isLabelClicked = e.target.tagName === 'LABEL' || e.target.classList.contains('subText');
-      if (e.target !== checkbox && !isLabelClicked) {
+      if (e.target !== checkbox) {
         checkbox.checked = !checkbox.checked;
-        checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+        const changeEvent = new Event('change');
+        checkbox.dispatchEvent(changeEvent);
       }
     });
 
+    const toggleFormError = (visible) => {
+      if (formErrorElement) {
+        formErrorElement.classList.toggle('hidden', !visible);
+      }
+    };
+
     checkbox.addEventListener('change', (e) => {
       e.preventDefault();
-      const checkedCheckboxes = Array.from(block.querySelectorAll('.role-cards-item input[type="checkbox"]')).filter(
-        (el) => el.checked,
-      );
-      if (checkedCheckboxes.length < 1) {
+      const isInSignupDialog = e.target.closest('.signup-dialog');
+      const isValid = validateForm(formElement);
+      toggleFormError(false);
+
+      if (!isInSignupDialog && !isValid) {
         checkbox.checked = true;
-        if (!block.querySelector('.form-error'))
-          block
-            .querySelector('.role-cards-holder')
-            ?.insertAdjacentHTML('beforebegin', `<span class="form-error">${FORM_ERROR}</span>`);
+        toggleFormError(true);
       } else {
         const isChecked = checkbox.checked;
         checkbox.closest('.role-cards-item').classList.toggle('role-cards-highlight', isChecked);
-        if (block.querySelector('.form-error')) block.querySelector('.form-error').remove();
 
-        if (isSignedIn) {
-          const updatedRoles = [];
-          roleCardsData.forEach((roleCard) => {
-            const roleCardCheckbox = block.querySelector(`input[name="${roleCard.role}"]`);
-            if (roleCardCheckbox.checked) {
-              updatedRoles.push(roleCard.role);
-            }
-          });
+        if (isSignedIn && isValid) {
+          const updatedRoles = roleCardsData
+            .filter((roleCard) => block.querySelector(`input[name="${roleCard.role}"]`).checked)
+            .map((roleCard) => roleCard.role);
+
           defaultProfileClient
             .updateProfile('role', updatedRoles, true)
             .then(() => sendNotice(PROFILE_UPDATED))
